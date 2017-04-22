@@ -2,7 +2,6 @@
 
 setting nickname
     c> my name is <nick>
-    s> ok
 
 watching participants
     c> folks
@@ -13,7 +12,6 @@ watching participants
 
 sending messages
     c> send <message>
-    s> ok
 
 requesting new messages
     c> new
@@ -41,8 +39,8 @@ requesting new messages
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 #define TIMESTAMP_LENGTH   10
-#define BUFFER_POOL_SIZE   16
-#define MAX_CONNECTIONS    1024
+#define BUFFER_POOL_SIZE   128
+#define MAX_CONNECTIONS    64
 #define MAX_MESSAGE_LENGTH 140
 #define MAX_NICK_LENGTH    20
 #define MAX_HISTORY_LENGTH 50
@@ -92,18 +90,18 @@ static struct {
   int length;
 } history;
 
-static char *
-system_error(void) { return strerror(errno); }
-
 static void
 die(const char * fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   vfprintf(stderr, fmt, ap);
-  va_end(ap);
   putchar('\n');
+  va_end(ap);
   exit(EXIT_FAILURE);
 }
+
+static char *
+system_error(void) { return strerror(errno); }
 
 static struct timespec
 get_time(void) {
@@ -185,7 +183,6 @@ send_later(int client, char * message) {
 
 static void
 send_package(int client, char * message) {
-  printf("send_package(%d, %s)\n", client, message);
   send_later(client, message);
   send_later(client, "\r\n");
 }
@@ -198,7 +195,6 @@ starts_with(char * string, const char * start) {
 static void
 add_to_history(char * nick, char * message) {
   struct timespec now;
-  printf("add_to_history(%s)\n", message);
   now = get_time();
   memmove(history.messages + 1, history.messages,
     history.length * sizeof(history.messages[0]));
@@ -210,7 +206,6 @@ add_to_history(char * nick, char * message) {
 
 #define PACKAGE_BEGIN_MY_NAME_IS "my name is "
 #define PACKAGE_BEGIN_SEND "send "
-#define PACKAGE_OK "ok"
 #define PACKAGE_FOLKS "folks"
 #define PACKAGE_NEW "new"
 
@@ -226,13 +221,11 @@ process_new_package(int client, char * package) {
   char outgoing[MAX_PACKAGE_LENGTH];
   struct timespec last_received_message, time;
   struct tm pretty_time;
-  printf("process_new_package(%d, %s)\n", client, package);
   if (starts_with(package, PACKAGE_BEGIN_MY_NAME_IS)) {
     length = strlen(package + strlen(PACKAGE_BEGIN_MY_NAME_IS));
     if (MAX_NICK_LENGTH < length) goto close_connection;
     strcpy(connections.data[client].nick,
       package + strlen(PACKAGE_BEGIN_MY_NAME_IS));
-    send_package(client, PACKAGE_OK);
   } else if (!strcmp(package, PACKAGE_FOLKS)) {
     sprintf(outgoing, "%d", connections.length - 1);
     send_package(client, outgoing);
@@ -244,7 +237,6 @@ process_new_package(int client, char * package) {
     if (MAX_MESSAGE_LENGTH < length) return -1;
     add_to_history(connections.data[client].nick,
       package + strlen(PACKAGE_BEGIN_SEND));
-    send_package(client, PACKAGE_OK);
   } else if (!strcmp(package, PACKAGE_NEW)) {
     last_received_message = connections.data[client].last_received_message;
     i = history.length - 1;
@@ -276,14 +268,12 @@ static int
 process_new_data(int client) {
   struct Buffer * buffer;
   char * begin, * end_of_package;
-  printf("process_new_data(%d)\n", client);
   buffer = &connections.data[client].input_buffer;
   begin = buffer->data;
   while (1) {
     end_of_package = strstr(begin, "\r\n");
     if (!end_of_package && begin == buffer->data &&
         sizeof(buffer->data) - 1 == buffer->used) {
-      printf("Too long message. Connection was closed.\n");
       close(connections.sockets[client].fd);
       return -1;
     }
@@ -302,16 +292,11 @@ handle_input(int client) {
   struct Buffer * buffer;
   int fd;
   ssize_t received;
-  printf("handle_input(%d)\n", client);
   fd = connections.sockets[client].fd;
   buffer = &connections.data[client].input_buffer;
   received = recv(fd, buffer->data + buffer->used,
     sizeof(buffer->data) - buffer->used - 1, 0);
-  if (!received) goto close_connection;
-  if (-1 == received) {
-    printf("'recv' failed: %s\n", system_error());
-    goto close_connection;
-  }
+  if (!received || -1 == received) goto close_connection;
   buffer->used += received;
   buffer->data[buffer->used] = '\0';
   if (-1 == process_new_data(client)) goto close_connection;
@@ -326,7 +311,6 @@ handle_output(int client) {
   struct ListOfBuffers * pending;
   int fd;
   ssize_t sent;
-  printf("handle_output(%d)\n", client);
   pending = &connections.data[client].pending_to_be_sent;
   fd = connections.sockets[client].fd;
   assert(pending->first);
@@ -363,12 +347,15 @@ accept_new_client(void) {
   struct sockaddr_in address;
   socklen_t address_length;
   int client_fd, n;
-  printf("accept_new_client()\n");
   address_length = sizeof(address);
   client_fd = accept(connections.sockets[0].fd,
     (struct sockaddr *) &address, &address_length);
   if (client_fd < 0) die("'accept' failed: %s", system_error());
   n = connections.length;
+  if (n == MAX_CONNECTIONS) {
+    close(client_fd);
+    return;
+  }
   connections.sockets[n].fd = client_fd;
   connections.sockets[n].events = POLLIN;
   memset(&connections.data[n], 0, sizeof(connections.data[n]));
@@ -403,11 +390,9 @@ main(int argc, char * argv[]) {
   if (65535 < port) die("port is too big");
   prepare_server(port);
   while (1) {
-    printf("polling...\n");
     if (-1 == poll(connections.sockets, connections.length, -1)) {
       die("'poll' failed: %s", system_error());
     }
-    printf("new event\n");
     for (i = 0, n = connections.length; i < n; ++i) {
       events = connections.sockets[i].revents;
       if (events & POLLIN) {

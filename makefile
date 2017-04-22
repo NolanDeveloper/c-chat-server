@@ -1,3 +1,8 @@
-CFLAGS += -std=c89 -g -Wall -Wextra -Werror -pedantic -fmax-errors=1
+CFLAGS += -g -std=c89 -Wall -Wextra -Werror -pedantic -fmax-errors=1
 
-main: main.o
+.PHONY: clean
+
+server: server.o
+
+clean:
+	$(RM) server.o server
